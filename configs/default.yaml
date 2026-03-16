@@ -1,0 +1,10 @@
+defaults:
+  - task: mnist.yaml
+
+model:
+  name: resnet
+
+method:
+  name: pseudo-label
+  hyperparameters:
+    consistency_coeff: 1.0

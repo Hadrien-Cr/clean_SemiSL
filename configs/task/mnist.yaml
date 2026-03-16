@@ -1,0 +1,7 @@
+task:
+  _target_: clean_SemiSL/task/registry.py
+  name: mnist
+  type: classification
+  labelling_ratio: 0.1
+  num_classes: 10
+  
