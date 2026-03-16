@@ -1,5 +1,7 @@
-_target_: clean_SemiSL.task.registry.load_dataset
+_target_: clean_SemiSL.task.registry.load_task
 name: mnist
+root: "data"
+download: True
 type: classification
 seed: 0
 labelling_ratio: 0.1
