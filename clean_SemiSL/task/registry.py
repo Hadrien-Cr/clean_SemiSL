@@ -13,6 +13,9 @@ def load_dataset(name, **kwargs):
     name = name.lower()
     if name not in DATASETS:
         raise ValueError(f"Unknown dataset: {name}")
-    source_ds = DATASETS[name](**kwargs)
+    source_ds = DATASETS[name](
+        "data",
+        download=True,
+    )
     return SemiLabelledDataset(source_ds=source_ds,**kwargs)
 

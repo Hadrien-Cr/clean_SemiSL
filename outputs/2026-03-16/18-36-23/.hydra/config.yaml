@@ -1,0 +1,13 @@
+task:
+  task:
+    _target_: clean_SemiSL/task/registry.py
+    name: mnist
+    type: classification
+    labelling_ratio: 0.1
+    num_classes: 10
+model:
+  name: resnet
+method:
+  name: pseudo-label
+  hyperparameters:
+    consistency_coeff: 1.0
