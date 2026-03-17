@@ -1,6 +1,9 @@
+import numpy as np
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, datasets
+
+NO_LABEL = -1
 
 DATASETS = {
     "mnist": datasets.MNIST,
@@ -28,11 +31,36 @@ def get_mean_std(dataset):
     round_fn = lambda x: round(x,4)
     return dict(mean=list(map(round_fn, mean.tolist())), std=list(map(round_fn,std.tolist())))
 
-def load_task(name, root, download, **kwargs):
-    """Dataset Instantiation""" 
+
+class RelabeledDataset(Dataset):
+    def __init__(self, source_ds: Dataset, labeled_indices: list[int]):
+        self.source_ds = source_ds
+        self.labeled_indices = labeled_indices
+    
+    def __len__(self):
+        return len(self.source_ds)
+    
+    def __getitem__(self, idx):
+        x,y = self.source_ds[idx]
+
+        if idx in self.labeled_indices:
+            y = NO_LABEL * np.ones_like(y)
+
+        return x,y
+
+def relabel_dataset(source_ds: Dataset, labeling_ratio: int, seed: int):
+    n = len(source_ds)
+    rng_gen = np.random.default_rng(seed)
+    labeled = rng_gen.choice(n, int(n*labeling_ratio))
+    labeled_indices, unlabeled_indices = [i for i in range(n) if i in labeled], [i for i in range(n) if not i in labeled]
+    return labeled_indices, unlabeled_indices, RelabeledDataset(source_ds,labeled_indices)
+
+
+def load_task(name, root, download, labeling_ratio, seed, **kwargs):
+    """RelabeledDataset Instantiation""" 
     name = name.lower()
     
-    train_dataset = DATASETS[name](
+    train_ds = DATASETS[name](
         root=root,
         download=download,
         train=True,
@@ -41,8 +69,8 @@ def load_task(name, root, download, **kwargs):
         ]) 
     )
 
-    mean_std = get_mean_std(train_dataset)
-    train_dataset = DATASETS[name](
+    mean_std = get_mean_std(train_ds)
+    train_ds = DATASETS[name](
         root=root,
         download=download,
         train=True,
@@ -51,7 +79,7 @@ def load_task(name, root, download, **kwargs):
             transforms.Normalize(**mean_std)
         ]) 
     )
-    eval_dataset = DATASETS[name](
+    eval_ds = DATASETS[name](
         root=root,
         download=download,
         train=False,
@@ -60,8 +88,28 @@ def load_task(name, root, download, **kwargs):
             transforms.Normalize(**mean_std)
         ]) 
     )
+
+    labeled_indices, unlabeled_indices, train_ds = relabel_dataset(
+        train_ds, labeling_ratio, seed
+    )
+
+    kwargs["train_ds"] = train_ds
+    kwargs["eval_ds"] = eval_ds
+    kwargs["labeled_indices"] = labeled_indices
+    kwargs["unlabeled_indices"] = unlabeled_indices
     
-    kwargs["train_dataset"] = train_dataset
-    kwargs["eval_dataset"] = eval_dataset 
+    def normalize_fn(tensor):
+        mean = torch.tensor(mean_std["mean"], device=tensor.device).view(-1, 1, 1)
+        std  = torch.tensor(mean_std["std"],  device=tensor.device).view(-1, 1, 1)
+        return tensor.sub_(mean).div_(std)
+
+    def denormalize_fn(tensor):
+        mean = torch.tensor(mean_std["mean"], device=tensor.device).view(-1, 1, 1)
+        std  = torch.tensor(mean_std["std"],  device=tensor.device).view(-1, 1, 1)
+        return tensor.mul_(std).add_(mean)
+    
+    kwargs["normalize_fn"] = normalize_fn
+    kwargs["denormalize_fn"] = denormalize_fn
+
     return kwargs
 

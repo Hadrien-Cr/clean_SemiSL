@@ -4,6 +4,10 @@ defaults:
 model:
   name: resnet
 
+workers: 1 
+batch_size: 8
+labeled_batch_size: 2
+
 method:
   name: pseudo-label
   hyperparameters:

@@ -1,0 +1,7 @@
+_target_: clean_SemiSL.task.custom.load_custom_task
+name: custom
+labeled_root: "data/custom/labeled_data"
+unlabeled_root: "data/custom/unlabeled_data"
+eval_root: "data/custom/eval_data"
+type: image_classification
+num_classes: 10

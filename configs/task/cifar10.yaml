@@ -2,7 +2,7 @@ _target_: clean_SemiSL.task.registry.load_task
 name: cifar10 
 root: "data"
 download: True
-type: classification
+type: image_classification
 seed: 0
-labelling_ratio: 0.1
+labeling_ratio: 0.1
 num_classes: 10
