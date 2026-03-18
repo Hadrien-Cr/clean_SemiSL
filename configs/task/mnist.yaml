@@ -6,3 +6,6 @@ type: image_classification
 seed: 0
 labeling_ratio: 0.1
 num_classes: 10
+metrics:
+  - _target_: clean_SemiSL.utils.metrics_utils.classification_top_1_accuracy
+  - _target_: clean_SemiSL.utils.metrics_utils.classification_top_5_accuracy

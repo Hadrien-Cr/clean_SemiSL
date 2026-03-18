@@ -1,14 +1,22 @@
 defaults:
-  - task: mnist 
+  - task: cifar10
 
 model:
-  name: resnet
+  _target_: clean_SemiSL.model.custom.ResNet32x32
+  block_name: "shake"
+  layers: [4,4,4]
+  num_classes: 10
+  channels: 96
+  downsample: "shift_conv"
 
+device: cuda
 workers: 1 
-batch_size: 8
-labeled_batch_size: 2
+num_epochs: 100
+batch_size: 20
+labeled_batch_size: 10
+optimizer: "adam"
+lr: 0.01
+weight_decay: 1e-5 
+consistency_coeff: 1.0
+verbose: True
 
-method:
-  name: pseudo-label
-  hyperparameters:
-    consistency_coeff: 1.0

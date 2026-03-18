@@ -9,6 +9,9 @@ DATASETS = {
     "mnist": datasets.MNIST,
     "cifar10": datasets.CIFAR10,
     "cifar100": datasets.CIFAR100,
+    "imagenet": datasets.ImageNet
+    #wget https://image-net.org/data/ILSVRC/2012/ILSVRC2012_img_train.tar --no-check-certificate
+    #wget https://mage-net.org/data/ILSVRC/2012/ILSVRC2012_img_val.tar --no-check-certificate
 }
 
 
