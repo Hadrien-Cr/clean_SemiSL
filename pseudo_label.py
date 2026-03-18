@@ -2,9 +2,13 @@ import itertools
 from omegaconf import DictConfig, OmegaConf
 import hydra
 from tqdm import tqdm
+import wandb
+import math
 
 import numpy as np
 import torch
+import torchinfo
+from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import Sampler, BatchSampler, SubsetRandomSampler
 from torch.nn import functional as F
@@ -16,11 +20,15 @@ NO_LABEL = -1
 
 augment = v2.AugMix()
 
-def bce_loss(out_probs, target_ohe):
-    return F.binary_cross_entropy(out_probs, target_ohe.float())
+def linear_schedule(initial_value, final_value, t, t_start, t_end):
+    progress = np.clip((t-t_start)/(t_end-t_start), 0, 1)
+    return initial_value + (final_value - initial_value) * progress
+    
+def bce_loss(out_probs, target_probs):
+    return F.binary_cross_entropy(out_probs, target_probs)
 
 class TwoStreamBatchSampler(Sampler):
-    """Iterate two sets of indices: primary (labeled) and secondary (unlabeled)
+    """Iterate two sets of indices: primary (unlabeled) and secondary (labeled)
     An 'epoch' is one iteration through the primary indices.
     During the epoch, the secondary indices are iterated through
     as many times as needed.
@@ -78,12 +86,12 @@ def create_dataloaders(
         batch_sampler = BatchSampler(subset_sampler, batch_size)
     else:
         batch_sampler = TwoStreamBatchSampler(
-            labeled_indices, 
             unlabeled_indices, 
+            labeled_indices, 
             batch_size=batch_size,
             secondary_batch_size=labeled_batch_size
         )
-
+    
     train_loader = DataLoader(
         dataset=train_ds,
         batch_sampler=batch_sampler,
@@ -101,31 +109,71 @@ def create_dataloaders(
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="default")
-def main(cfg):
+def main(cfg): 
+    hyperparams = cfg.hyperparams
     task = hydra.utils.instantiate(cfg.task)
     model = hydra.utils.instantiate(cfg.model).to(cfg.device)
+    task["metrics"] = {k: m.to(cfg.device) for k, m in task["metrics"].items()}
+    
+    if cfg.wandb:
+        import wandb
+        wandb.init(
+            project=cfg.wandb.project_name,
+            sync_tensorboard=True,
+            config=OmegaConf.to_container(hyperparams),
+            name=cfg.run_name,
+        )
+    writer = SummaryWriter(f"runs/{cfg.run_name}")
+    writer.add_text(
+        "hyperparameters",
+        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in OmegaConf.to_container(hyperparams).items()])),
+    )
 
     train_loader, eval_loader = create_dataloaders(
         task["train_ds"],
         task["eval_ds"],
         discard_unlabeled=False,
-        batch_size=cfg.batch_size,
-        labeled_batch_size=cfg.labeled_batch_size,
+        batch_size=hyperparams.batch_size,
+        labeled_batch_size=hyperparams.labeled_batch_size,
         labeled_indices=task["labeled_indices"],
         unlabeled_indices=task["unlabeled_indices"],
-        workers=cfg.workers
-        )
+        workers=hyperparams.workers
+    )
 
     optimizer = torch.optim.Adam(
         model.parameters(), 
-        cfg.lr,
-        weight_decay=cfg.weight_decay,
+        hyperparams.lr.v0,
     )
-    
-    # Training Loop
-    for epoch in range(cfg.num_epochs):
 
-        for x,y in tqdm(train_loader, desc = f"Epoch {epoch+1}/{cfg.num_epochs}", disable = not cfg.verbose):
+    torchinfo.summary(model, input_size=(1,)+task["train_ds"][0][0].shape, depth = 2)
+
+    # Training Loop
+    for epoch in range(hyperparams.num_epochs):
+        
+        model.train()
+
+        pbar = tqdm(train_loader, disable = not cfg.verbose)
+        num_batches = len(pbar)
+
+        for i, (x,y) in enumerate(pbar):
+            lr = linear_schedule(
+                hyperparams.lr.v0, 
+                hyperparams.lr.vf, 
+                epoch + i/num_batches, 
+                hyperparams.lr.ramp_start,
+                hyperparams.lr.ramp_end
+            )
+            consistency_coeff = linear_schedule(
+                hyperparams.consistency_coeff.v0, 
+                hyperparams.consistency_coeff.vf, 
+                epoch + i /num_batches,
+                hyperparams.consistency_coeff.ramp_start,
+                hyperparams.consistency_coeff.ramp_end
+            )
+
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr 
+
             x = x.to(cfg.device)
             y = y.to(cfg.device)
 
@@ -135,41 +183,71 @@ def main(cfg):
             x1, x2 = augment(x), augment(x)
             out_logits_x1, out_logits_x2 = model(x1), model(x2)
             out_probs_x1, out_probs_x2 = F.softmax(out_logits_x1, dim = -1), F.softmax(out_logits_x2, dim = -1) 
-
+            
             task_loss = bce_loss(
                 out_probs_x1[l_indices],
-                F.one_hot(y[l_indices], task["num_classes"])
+                F.one_hot(y[l_indices], task["num_classes"]).float()
             )
+
+            pseudo_label = out_probs_x2.argmax(-1).detach()
 
             consistency_loss = bce_loss(
                 out_probs_x1,
-                F.one_hot(out_probs_x2.argmax(-1), task["num_classes"])
+                F.one_hot(out_probs_x2.argmax(-1), task["num_classes"]).float()
             )
 
-            loss = task_loss + cfg.consistency_coeff * consistency_loss
-            loss.backward()
-                
-            
+            loss = task_loss + consistency_coeff * consistency_loss
 
-    for x, y in train_loader:
-        unnormalized_x = task["denormalize_fn"](x)
-        plot_batch(
-            unnormalized_x,
-            None,
-            y,
-            task_type=task["type"],
-            save="here.png"
-        )
-        break
-    
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+  
+            with torch.no_grad():
+                out_logits = model(x[l_indices])
+            
+            pred = F.softmax(out_logits, dim=-1)
+
+            for k,m in task["metrics"].items():
+                m(pred,y[l_indices].float())
+
+            pbar.set_description(f"Epoch = {epoch+1}/{hyperparams.num_epochs}, LR = {lr:.5f}, Loss = {loss.detach().item():.3f} " + " ".join([f"{k}={m.compute():.3f}" for k,m in task["metrics"].items()]))
+            
+            
+            writer.add_scalar("lr", lr, global_step = i + epoch * num_batches)
+            writer.add_scalar("consistency_coeff", consistency_coeff, global_step = i + epoch * num_batches)
+            
+            writer.add_scalar("task_loss", task_loss.detach().item(), global_step = i + epoch * num_batches)
+            writer.add_scalar("consistency_loss", consistency_loss.detach().item(), global_step = i + epoch * num_batches)
+            writer.add_scalar("loss", loss.detach().item(), global_step = i + epoch * num_batches)
+
+
+
+        for k,m in task["metrics"].items():
+            writer.add_scalar("train/" + k, m.compute(), global_step = i + epoch * num_batches)
+            m.reset()
+
+        model.eval()
+
+        for x,y in tqdm(eval_loader, disable = not cfg.verbose):
+            x = x.to(cfg.device)
+            y = y.to(cfg.device)
+            
+            with torch.no_grad():
+                out_logits = model(x)
+            
+            pred = F.softmax(out_logits, dim = -1) 
+
+            for k,m in task["metrics"].items():
+                m(pred,y.float())
+            pbar.set_description(f"Eval Metrics: " + " ".join([f"{k}={m.compute():.3f}" for k,m in task["metrics"].items()]))
+            
+        for k,m in task["metrics"].items():
+            writer.add_scalar("eval/" + k, m.compute(), global_step = (epoch+1) * num_batches)
+            m.reset()
+        
+    writer.close()
+    if cfg.wandb:
+        wandb.finish()
+
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-

@@ -1,4 +1,5 @@
 defaults:
+  - _self_
   - task: cifar10
 
 model:
@@ -6,17 +7,30 @@ model:
   block_name: "shake"
   layers: [4,4,4]
   num_classes: 10
-  channels: 96
+  channels: 48
   downsample: "shift_conv"
 
-device: cuda
-workers: 1 
-num_epochs: 100
-batch_size: 20
-labeled_batch_size: 10
-optimizer: "adam"
-lr: 0.01
-weight_decay: 1e-5 
-consistency_coeff: 1.0
-verbose: True
+hyperparams:
+  workers: 4 
+  num_epochs: 50
+  batch_size: 100 
+  labeled_batch_size: 50
+  optimizer: "adam"
+  
+  lr:
+    v0: 0.001
+    vf: 0.0001
+    ramp_start: 0
+    ramp_end: 50
 
+  consistency_coeff: 
+    v0: 0.0
+    vf: 0.5
+    ramp_start: 5
+    ramp_end: 10
+
+device: "cuda"
+verbose: True
+wandb:
+  project_name: "clean_SemiSL"
+run_name: "pseudo_label"

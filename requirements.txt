@@ -1,7 +1,9 @@
 hydra-core
 torch
 torchvision
+torchinfo
 torchmetrics
 tqdm
 numpy
 matplotlib
+wandb

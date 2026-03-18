@@ -113,6 +113,6 @@ def load_task(name, root, download, labeling_ratio, seed, **kwargs):
     
     kwargs["normalize_fn"] = normalize_fn
     kwargs["denormalize_fn"] = denormalize_fn
-
+    kwargs["metrics"] = {k: v for k, v in kwargs["metrics"].items()}
     return kwargs
 

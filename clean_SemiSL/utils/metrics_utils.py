@@ -5,7 +5,7 @@ class ClassificationTopKAccuracy(Metric):
     def __init__(self, topk: int = 1,):
         super().__init__()
         self.topk = topk
-        self.add_state("correct", default=torch.tensor(0), dist_reduce_fx="sum")
+        self.add_state("correct", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
 
     def update(self, output: torch.Tensor, target: torch.Tensor):
@@ -13,7 +13,7 @@ class ClassificationTopKAccuracy(Metric):
         _, pred = output.topk(self.topk, 1, True, True)
         pred = pred.t()
         correct = pred.eq(target.view(1, -1).expand_as(pred))
-        self.correct += correct[:self.topk].view(-1).float().sum()
+        self.correct += correct[:self.topk].reshape(-1).float().sum()
         self.total += n
 
     def compute(self):
