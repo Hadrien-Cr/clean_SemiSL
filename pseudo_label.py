@@ -23,8 +23,22 @@ augment = v2.AugMix()
 def linear_schedule(initial_value, final_value, t, t_start, t_end):
     progress = np.clip((t-t_start)/(t_end-t_start), 0, 1)
     return initial_value + (final_value - initial_value) * progress
-    
+
+def cosine_schedule(initial_value, final_value, t, t_start, t_end):
+    progress = np.clip((t-t_start)/(t_end-t_start), 0, 1)
+    return final_value + (initial_value - final_value) * (1 + np.cos(np.pi * progress)) / 2 
+
+def rescale_probs(probs, temperature):
+    logits = torch.log(probs.clamp(min=1e-7))
+    scaled = F.softmax(logits / temperature, dim=-1)
+    return scaled.clamp(min=1e-9, max=1 - 1e-9) 
+
+def kl_div_loss(out_probs, target_probs):
+    log_pred = torch.log(out_probs.clamp(min=1e-7))
+    return F.kl_div(log_pred, target_probs, reduction="batchmean")
+
 def bce_loss(out_probs, target_probs):
+    out_probs = out_probs.clamp(min=1e-7, max=1 - 1e-7)
     return F.binary_cross_entropy(out_probs, target_probs)
 
 class TwoStreamBatchSampler(Sampler):
@@ -156,19 +170,19 @@ def main(cfg):
         num_batches = len(pbar)
 
         for i, (x,y) in enumerate(pbar):
-            lr = linear_schedule(
+            lr = cosine_schedule(
                 hyperparams.lr.v0, 
                 hyperparams.lr.vf, 
                 epoch + i/num_batches, 
                 hyperparams.lr.ramp_start,
                 hyperparams.lr.ramp_end
             )
-            consistency_coeff = linear_schedule(
-                hyperparams.consistency_coeff.v0, 
-                hyperparams.consistency_coeff.vf, 
+            regularization_coeff = linear_schedule(
+                hyperparams.regularization_coeff.v0, 
+                hyperparams.regularization_coeff.vf, 
                 epoch + i /num_batches,
-                hyperparams.consistency_coeff.ramp_start,
-                hyperparams.consistency_coeff.ramp_end
+                hyperparams.regularization_coeff.ramp_start,
+                hyperparams.regularization_coeff.ramp_end
             )
 
             for param_group in optimizer.param_groups:
@@ -181,7 +195,10 @@ def main(cfg):
             u_indices = torch.eq(y, NO_LABEL).nonzero(as_tuple=True)
             
             x1, x2 = augment(x), augment(x)
-            out_logits_x1, out_logits_x2 = model(x1), model(x2)
+            out_logits_x1 = model(x1)
+            
+            with torch.no_grad(): out_logits_x2 = model(x2)
+            
             out_probs_x1, out_probs_x2 = F.softmax(out_logits_x1, dim = -1), F.softmax(out_logits_x2, dim = -1) 
             
             task_loss = bce_loss(
@@ -191,12 +208,12 @@ def main(cfg):
 
             pseudo_label = out_probs_x2.argmax(-1).detach()
 
-            consistency_loss = bce_loss(
+            regularization_loss = kl_div_loss(
                 out_probs_x1,
-                F.one_hot(out_probs_x2.argmax(-1), task["num_classes"]).float()
+                rescale_probs(out_probs_x2, hyperparams.sharpening_temperature)
             )
 
-            loss = task_loss + consistency_coeff * consistency_loss
+            loss = task_loss + regularization_coeff * regularization_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -212,18 +229,15 @@ def main(cfg):
 
             pbar.set_description(f"Epoch = {epoch+1}/{hyperparams.num_epochs}, LR = {lr:.5f}, Loss = {loss.detach().item():.3f} " + " ".join([f"{k}={m.compute():.3f}" for k,m in task["metrics"].items()]))
             
-            
+            global_step = (i + epoch * num_batches) * hyperparams.batch_size
             writer.add_scalar("lr", lr, global_step = i + epoch * num_batches)
-            writer.add_scalar("consistency_coeff", consistency_coeff, global_step = i + epoch * num_batches)
-            
-            writer.add_scalar("task_loss", task_loss.detach().item(), global_step = i + epoch * num_batches)
-            writer.add_scalar("consistency_loss", consistency_loss.detach().item(), global_step = i + epoch * num_batches)
-            writer.add_scalar("loss", loss.detach().item(), global_step = i + epoch * num_batches)
-
-
+            writer.add_scalar("regularization_coeff", regularization_coeff, global_step = global_step)
+            writer.add_scalar("task_loss", task_loss.detach().item(), global_step = global_step)
+            writer.add_scalar("regularization_loss", regularization_loss.detach().item(), global_step = global_step)
+            writer.add_scalar("loss", loss.detach().item(), global_step = global_step)
 
         for k,m in task["metrics"].items():
-            writer.add_scalar("train/" + k, m.compute(), global_step = i + epoch * num_batches)
+            writer.add_scalar("train/" + k, m.compute(), global_step = global_step)
             m.reset()
 
         model.eval()
@@ -239,10 +253,11 @@ def main(cfg):
 
             for k,m in task["metrics"].items():
                 m(pred,y.float())
+
             pbar.set_description(f"Eval Metrics: " + " ".join([f"{k}={m.compute():.3f}" for k,m in task["metrics"].items()]))
             
         for k,m in task["metrics"].items():
-            writer.add_scalar("eval/" + k, m.compute(), global_step = (epoch+1) * num_batches)
+            writer.add_scalar("eval/" + k, m.compute(), global_step = global_step)
             m.reset()
         
     writer.close()

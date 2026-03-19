@@ -13,8 +13,8 @@ model:
 hyperparams:
   workers: 4 
   num_epochs: 50
-  batch_size: 100 
-  labeled_batch_size: 50
+  batch_size: 64 
+  labeled_batch_size: 32
   optimizer: "adam"
   
   lr:
@@ -23,11 +23,12 @@ hyperparams:
     ramp_start: 0
     ramp_end: 50
 
-  consistency_coeff: 
+  sharpening_temperature: 0.1
+  regularization_coeff: 
     v0: 0.0
-    vf: 0.5
-    ramp_start: 5
-    ramp_end: 10
+    vf: 0.2
+    ramp_start: 10
+    ramp_end: 20
 
 device: "cuda"
 verbose: True
