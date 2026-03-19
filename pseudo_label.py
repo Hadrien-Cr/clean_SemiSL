@@ -157,6 +157,7 @@ def main(cfg):
     optimizer = torch.optim.Adam(
         model.parameters(), 
         hyperparams.lr.v0,
+        weight_decay=hyperparams.weight_decay
     )
 
     torchinfo.summary(model, input_size=(1,)+task["train_ds"][0][0].shape, depth = 2)
@@ -201,7 +202,7 @@ def main(cfg):
             
             out_probs_x1, out_probs_x2 = F.softmax(out_logits_x1, dim = -1), F.softmax(out_logits_x2, dim = -1) 
             
-            task_loss = bce_loss(
+            supervision_loss = bce_loss(
                 out_probs_x1[l_indices],
                 F.one_hot(y[l_indices], task["num_classes"]).float()
             )
@@ -213,7 +214,7 @@ def main(cfg):
                 rescale_probs(out_probs_x2, hyperparams.sharpening_temperature)
             )
 
-            loss = task_loss + regularization_coeff * regularization_loss
+            loss = supervision_loss + regularization_coeff * regularization_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -232,7 +233,7 @@ def main(cfg):
             global_step = (i + epoch * num_batches) * hyperparams.batch_size
             writer.add_scalar("lr", lr, global_step = i + epoch * num_batches)
             writer.add_scalar("regularization_coeff", regularization_coeff, global_step = global_step)
-            writer.add_scalar("task_loss", task_loss.detach().item(), global_step = global_step)
+            writer.add_scalar("supervision_loss", supervision_loss.detach().item(), global_step = global_step)
             writer.add_scalar("regularization_loss", regularization_loss.detach().item(), global_step = global_step)
             writer.add_scalar("loss", loss.detach().item(), global_step = global_step)
 

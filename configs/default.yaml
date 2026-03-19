@@ -16,7 +16,8 @@ hyperparams:
   batch_size: 64 
   labeled_batch_size: 32
   optimizer: "adam"
-  
+  weight_decay: 1e-5
+
   lr:
     v0: 0.001
     vf: 0.0001
