@@ -46,7 +46,7 @@ class RelabeledDataset(Dataset):
     def __getitem__(self, idx):
         x,y = self.source_ds[idx]
 
-        if idx in self.labeled_indices:
+        if idx not in self.labeled_indices:
             y = NO_LABEL * np.ones_like(y)
 
         return x,y
@@ -54,8 +54,8 @@ class RelabeledDataset(Dataset):
 def relabel_dataset(source_ds: Dataset, labeling_ratio: int, seed: int):
     n = len(source_ds)
     rng_gen = np.random.default_rng(seed)
-    labeled = rng_gen.choice(n, int(n*labeling_ratio))
-    labeled_indices, unlabeled_indices = [i for i in range(n) if i in labeled], [i for i in range(n) if not i in labeled]
+    labeled_indices = rng_gen.choice(n, int(n*labeling_ratio), replace=False)
+    unlabeled_indices = [i for i in range(n) if i not in labeled_indices]
     return labeled_indices, unlabeled_indices, RelabeledDataset(source_ds,labeled_indices)
 
 

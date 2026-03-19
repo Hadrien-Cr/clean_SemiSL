@@ -145,7 +145,7 @@ def main(cfg):
     train_loader, eval_loader = create_dataloaders(
         task["train_ds"],
         task["eval_ds"],
-        discard_unlabeled=False,
+        discard_unlabeled=cfg.discard_unlabeled,
         batch_size=hyperparams.batch_size,
         labeled_batch_size=hyperparams.labeled_batch_size,
         labeled_indices=task["labeled_indices"],
@@ -162,6 +162,8 @@ def main(cfg):
     torchinfo.summary(model, input_size=(1,)+task["train_ds"][0][0].shape, depth = 2)
 
     # Training Loop
+    global_step = 0
+
     for epoch in range(hyperparams.num_epochs):
         
         model.train()
@@ -221,7 +223,7 @@ def main(cfg):
 
             pbar.set_description(f"Epoch = {epoch+1}/{hyperparams.num_epochs}, LR = {lr:.5f}, Loss = {loss.detach().item():.3f} " + " ".join([f"{k}={m.compute():.3f}" for k,m in task["metrics"].items()]))
             
-            global_step = (i + epoch * num_batches) * hyperparams.batch_size
+            global_step += hyperparams.batch_size
             writer.add_scalar("lr", lr, global_step = global_step)
             writer.add_scalar("regularization_coeff", regularization_coeff, global_step = global_step)
             writer.add_scalar("supervision_loss", supervision_loss.detach().item(), global_step = global_step)

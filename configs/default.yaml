@@ -13,6 +13,7 @@ model:
 hyperparams:
   workers: 4 
   num_epochs: 50
+  discard_unlabeled: False
   batch_size: 64 
   labeled_batch_size: 32
   optimizer: "adam"
@@ -33,6 +34,7 @@ hyperparams:
 
 device: "cuda"
 verbose: True
+log_wandb: True
 wandb:
   project_name: "clean_SemiSL"
 run_name: "pseudo_label"

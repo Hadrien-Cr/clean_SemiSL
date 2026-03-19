@@ -95,9 +95,14 @@ def create_dataloaders(
     unlabeled_indices: list[int],
     workers: int,
 ):
+    for i in labeled_indices:
+        (x,y) = train_ds[i]
+        print(y)
+        if i > 1000: break
+
     if discard_unlabeled:
         subset_sampler = SubsetRandomSampler(labeled_indices)
-        batch_sampler = BatchSampler(subset_sampler, batch_size)
+        batch_sampler = BatchSampler(subset_sampler, batch_size, drop_last=False)
     else:
         batch_sampler = TwoStreamBatchSampler(
             unlabeled_indices, 
@@ -129,7 +134,7 @@ def main(cfg):
     model = hydra.utils.instantiate(cfg.model).to(cfg.device)
     task["metrics"] = {k: m.to(cfg.device) for k, m in task["metrics"].items()}
     
-    if cfg.wandb:
+    if cfg.log_wandb:
         import wandb
         wandb.init(
             project=cfg.wandb.project_name,
@@ -146,7 +151,7 @@ def main(cfg):
     train_loader, eval_loader = create_dataloaders(
         task["train_ds"],
         task["eval_ds"],
-        discard_unlabeled=False,
+        discard_unlabeled=hyperparams.discard_unlabeled,
         batch_size=hyperparams.batch_size,
         labeled_batch_size=hyperparams.labeled_batch_size,
         labeled_indices=task["labeled_indices"],
@@ -163,6 +168,8 @@ def main(cfg):
     torchinfo.summary(model, input_size=(1,)+task["train_ds"][0][0].shape, depth = 2)
 
     # Training Loop
+    global_step = 0
+
     for epoch in range(hyperparams.num_epochs):
         
         model.train()
@@ -194,7 +201,7 @@ def main(cfg):
 
             l_indices = torch.ne(y, NO_LABEL).nonzero(as_tuple=True)
             u_indices = torch.eq(y, NO_LABEL).nonzero(as_tuple=True)
-            
+
             x1, x2 = augment(x), augment(x)
             out_logits_x1 = model(x1)
             
@@ -230,8 +237,8 @@ def main(cfg):
 
             pbar.set_description(f"Epoch = {epoch+1}/{hyperparams.num_epochs}, LR = {lr:.5f}, Loss = {loss.detach().item():.3f} " + " ".join([f"{k}={m.compute():.3f}" for k,m in task["metrics"].items()]))
             
-            global_step = (i + epoch * num_batches) * hyperparams.batch_size
-            writer.add_scalar("lr", lr, global_step = i + epoch * num_batches)
+            global_step += hyperparams.batch_size
+            writer.add_scalar("lr", lr, global_step = global_step)
             writer.add_scalar("regularization_coeff", regularization_coeff, global_step = global_step)
             writer.add_scalar("supervision_loss", supervision_loss.detach().item(), global_step = global_step)
             writer.add_scalar("regularization_loss", regularization_loss.detach().item(), global_step = global_step)
