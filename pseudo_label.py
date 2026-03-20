@@ -18,7 +18,11 @@ from clean_SemiSL.utils.plot_utils import plot_batch
 
 NO_LABEL = -1
 
-augment = v2.AugMix()
+augment = v2.Compose([
+    v2.RandomCrop(32, padding=4),
+    v2.RandomHorizontalFlip(),
+    v2.AugMix()
+])
 
 def linear_schedule(initial_value, final_value, t, t_start, t_end):
     progress = np.clip((t-t_start)/(t_end-t_start), 0, 1)
@@ -29,17 +33,16 @@ def cosine_schedule(initial_value, final_value, t, t_start, t_end):
     return final_value + (initial_value - final_value) * (1 + np.cos(np.pi * progress)) / 2 
 
 def rescale_probs(probs, temperature):
-    logits = torch.log(probs.clamp(min=1e-7))
+    logits = torch.log(probs.clamp(min=1e-9))
     scaled = F.softmax(logits / temperature, dim=-1)
     return scaled.clamp(min=1e-9, max=1 - 1e-9) 
 
 def kl_div_loss(out_probs, target_probs):
-    log_pred = torch.log(out_probs.clamp(min=1e-7))
+    log_pred = torch.log(out_probs.clamp(min=1e-9))
     return F.kl_div(log_pred, target_probs, reduction="batchmean")
 
-def bce_loss(out_probs, target_probs):
-    out_probs = out_probs.clamp(min=1e-7, max=1 - 1e-7)
-    return F.binary_cross_entropy(out_probs, target_probs)
+def ce_loss(out_logits, target):
+    return F.cross_entropy(out_logits, target)
 
 class TwoStreamBatchSampler(Sampler):
     """Iterate two sets of indices: primary (unlabeled) and secondary (labeled)
@@ -47,11 +50,11 @@ class TwoStreamBatchSampler(Sampler):
     During the epoch, the secondary indices are iterated through
     as many times as needed.
     """
-    def __init__(self, primary_indices, secondary_indices, batch_size, secondary_batch_size):
+    def __init__(self, primary_indices, secondary_indices, batch_size, primary_batch_size):
         self.primary_indices = primary_indices
         self.secondary_indices = secondary_indices
-        self.secondary_batch_size = secondary_batch_size
-        self.primary_batch_size = batch_size - secondary_batch_size
+        self.secondary_batch_size = batch_size - primary_batch_size
+        self.primary_batch_size = primary_batch_size
 
         assert len(self.primary_indices) >= self.primary_batch_size > 0
         assert len(self.secondary_indices) >= self.secondary_batch_size > 0
@@ -95,20 +98,15 @@ def create_dataloaders(
     unlabeled_indices: list[int],
     workers: int,
 ):
-    for i in labeled_indices:
-        (x,y) = train_ds[i]
-        print(y)
-        if i > 1000: break
-
     if discard_unlabeled:
         subset_sampler = SubsetRandomSampler(labeled_indices)
         batch_sampler = BatchSampler(subset_sampler, batch_size, drop_last=False)
     else:
         batch_sampler = TwoStreamBatchSampler(
-            unlabeled_indices, 
-            labeled_indices, 
+            primary_indices=unlabeled_indices, 
+            secondary_indices=labeled_indices, 
             batch_size=batch_size,
-            secondary_batch_size=labeled_batch_size
+            primary_batch_size=batch_size - labeled_batch_size
         )
     
     train_loader = DataLoader(
@@ -134,6 +132,21 @@ def main(cfg):
     model = hydra.utils.instantiate(cfg.model).to(cfg.device)
     task["metrics"] = {k: m.to(cfg.device) for k, m in task["metrics"].items()}
     
+    not_bn_params = [p for n, p in model.named_parameters() if "bn" not in n and "norm" not in n]
+    bn_params = [p for n, p in model.named_parameters() if "bn" in n or "norm" in n]
+
+    optimizer = torch.optim.SGD(
+        params=[
+            {"params": not_bn_params},
+            {"params": bn_params, "weight_decay": 0.0}
+        ],
+        lr=hyperparams.lr.v0,
+        weight_decay=cfg.optimizer.weight_decay,
+        momentum=cfg.optimizer.momentum,
+        nesterov=cfg.optimizer.nesterov
+    )
+    print(f"#Labeled: {len(task['labeled_indices'])}; #Unlabeled: {len(task['unlabeled_indices'])}")
+
     if cfg.log_wandb:
         import wandb
         wandb.init(
@@ -157,12 +170,6 @@ def main(cfg):
         labeled_indices=task["labeled_indices"],
         unlabeled_indices=task["unlabeled_indices"],
         workers=hyperparams.workers
-    )
-
-    optimizer = torch.optim.Adam(
-        model.parameters(), 
-        hyperparams.lr.v0,
-        weight_decay=hyperparams.weight_decay
     )
 
     torchinfo.summary(model, input_size=(1,)+task["train_ds"][0][0].shape, depth = 2)
@@ -209,9 +216,9 @@ def main(cfg):
             
             out_probs_x1, out_probs_x2 = F.softmax(out_logits_x1, dim = -1), F.softmax(out_logits_x2, dim = -1) 
             
-            supervision_loss = bce_loss(
-                out_probs_x1[l_indices],
-                F.one_hot(y[l_indices], task["num_classes"]).float()
+            supervision_loss = ce_loss(
+                out_logits_x1[l_indices],
+                y[l_indices]
             )
 
             pseudo_label = out_probs_x2.argmax(-1).detach()

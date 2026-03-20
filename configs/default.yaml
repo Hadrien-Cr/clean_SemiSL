@@ -1,6 +1,6 @@
 defaults:
-  - _self_
   - task: cifar10
+  - _self_
 
 model:
   _target_: clean_SemiSL.model.custom.ResNet32x32
@@ -10,31 +10,36 @@ model:
   channels: 48
   downsample: "shift_conv"
 
+optimizer:
+  _target_: torch.optim.SGD
+  weight_decay: 1e-4
+  momentum: 0.9
+  nesterov: True
+
 hyperparams:
   workers: 4 
-  num_epochs: 50
+  num_epochs: 100
   discard_unlabeled: False
-  batch_size: 64 
-  labeled_batch_size: 32
-  optimizer: "adam"
-  weight_decay: 1e-5
-
+  batch_size: 128
+  labeled_batch_size: 64
+  
   lr:
-    v0: 0.001
-    vf: 0.0001
+    v0: 0.1
+    vf: 0.01
     ramp_start: 0
     ramp_end: 50
-
+  
+  regularization_name: "pseudo_label"
   sharpening_temperature: 0.1
   regularization_coeff: 
     v0: 0.0
-    vf: 0.2
-    ramp_start: 10
-    ramp_end: 20
+    vf: 0.5
+    ramp_start: 5 
+    ramp_end: 15
 
 device: "cuda"
 verbose: True
 log_wandb: True
 wandb:
   project_name: "clean_SemiSL"
-run_name: "pseudo_label"
+run_name: "cifar_pseudo_label"
