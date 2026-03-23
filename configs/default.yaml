@@ -18,28 +18,29 @@ optimizer:
 
 hyperparams:
   workers: 4 
-  num_epochs: 100
+  num_iterations: 500_000
+  eval_frequency: 1_000
   discard_unlabeled: False
-  batch_size: 128
-  labeled_batch_size: 64
+  batch_size: 200
+  labeled_batch_size: 100
   
   lr:
     v0: 0.1
     vf: 0.01
     ramp_start: 0
-    ramp_end: 50
+    ramp_end: 500_000 
   
   regularization_name: "pseudo_label"
-  sharpening_temperature: 0.1
+  sharpening_temperature: 0.5
   regularization_coeff: 
     v0: 0.0
     vf: 0.5
-    ramp_start: 5 
-    ramp_end: 15
+    ramp_start: 0
+    ramp_end: 200_000 
 
 device: "cuda"
 verbose: True
 log_wandb: True
 wandb:
   project_name: "clean_SemiSL"
-run_name: "cifar_pseudo_label"
+run_name: "cifar10_pseudo_label"

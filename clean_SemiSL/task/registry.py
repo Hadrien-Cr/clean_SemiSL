@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Subset
 from torchvision import transforms, datasets
 
 NO_LABEL = -1
@@ -35,28 +35,25 @@ def get_mean_std(dataset):
     return dict(mean=list(map(round_fn, mean.tolist())), std=list(map(round_fn,std.tolist())))
 
 
-class RelabeledDataset(Dataset):
-    def __init__(self, source_ds: Dataset, labeled_indices: list[int]):
-        self.source_ds = source_ds
-        self.labeled_indices = labeled_indices
-    
-    def __len__(self):
-        return len(self.source_ds)
-    
+class UnlabeledDataset(Dataset):
+    def __init__(self, source_ds, indices):
+        self.dataset = Subset(source_ds, indices)
+
     def __getitem__(self, idx):
-        x,y = self.source_ds[idx]
+        x, y = self.dataset[idx]
+        return x, NO_LABEL * np.ones_like(y)
 
-        if idx not in self.labeled_indices:
-            y = NO_LABEL * np.ones_like(y)
+    def __len__(self):
+        return len(self.dataset)
 
-        return x,y
 
 def relabel_dataset(source_ds: Dataset, labeling_ratio: int, seed: int):
     n = len(source_ds)
     rng_gen = np.random.default_rng(seed)
     labeled_indices = rng_gen.choice(n, int(n*labeling_ratio), replace=False)
     unlabeled_indices = [i for i in range(n) if i not in labeled_indices]
-    return labeled_indices, unlabeled_indices, RelabeledDataset(source_ds,labeled_indices)
+    
+    return Subset(source_ds, labeled_indices), UnlabeledDataset(source_ds, unlabeled_indices)
 
 
 def load_task(name, root, download, labeling_ratio, seed, **kwargs):
@@ -92,14 +89,13 @@ def load_task(name, root, download, labeling_ratio, seed, **kwargs):
         ]) 
     )
 
-    labeled_indices, unlabeled_indices, train_ds = relabel_dataset(
+    train_ds_labeled, train_ds_unlabeled = relabel_dataset(
         train_ds, labeling_ratio, seed
     )
 
-    kwargs["train_ds"] = train_ds
+    kwargs["train_ds_labeled"] = train_ds_labeled
+    kwargs["train_ds_unlabeled"] = train_ds_unlabeled
     kwargs["eval_ds"] = eval_ds
-    kwargs["labeled_indices"] = labeled_indices
-    kwargs["unlabeled_indices"] = unlabeled_indices
     
     def normalize_fn(tensor):
         mean = torch.tensor(mean_std["mean"], device=tensor.device).view(-1, 1, 1)

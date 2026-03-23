@@ -18,7 +18,11 @@ from clean_SemiSL.utils.plot_utils import plot_batch
 
 NO_LABEL = -1
 
-augment = v2.AugMix()
+augment = v2.Compose([
+    v2.RandomCrop(32, padding=4),
+    v2.RandomHorizontalFlip(),
+    v2.AugMix()
+])
 
 def linear_schedule(initial_value, final_value, t, t_start, t_end):
     progress = np.clip((t-t_start)/(t_end-t_start), 0, 1)
@@ -26,100 +30,65 @@ def linear_schedule(initial_value, final_value, t, t_start, t_end):
 
 def cosine_schedule(initial_value, final_value, t, t_start, t_end):
     progress = np.clip((t-t_start)/(t_end-t_start), 0, 1)
-    return final_value + (initial_value - final_value) * (1 + np.cos(np.pi * progress)) / 2
+    return final_value + (initial_value - final_value) * (1 + np.cos(np.pi * progress)) / 2 
 
 def rescale_probs(probs, temperature):
     logits = torch.log(probs.clamp(min=1e-9))
     scaled = F.softmax(logits / temperature, dim=-1)
     return scaled.clamp(min=1e-9, max=1 - 1e-9) 
 
-def kl_div_loss(out_probs, target_probs):
-    log_pred = torch.log(out_probs.clamp(min=1e-9))
-    return F.kl_div(log_pred, target_probs, reduction="batchmean")
-
 def ce_loss(out_logits, target):
     return F.cross_entropy(out_logits, target)
 
+def entropy(probs):
+    return -(probs * probs.log().clamp(min=-1e7)).sum(dim=-1).mean()
 
-class TwoStreamBatchSampler(Sampler):
-    """Iterate two sets of indices: primary (unlabeled) and secondary (labeled)
-    An 'epoch' is one iteration through the primary indices.
-    During the epoch, the secondary indices are iterated through
-    as many times as needed.
-    """
-    def __init__(self, primary_indices, secondary_indices, batch_size, primary_batch_size):
-        self.primary_indices = primary_indices
-        self.secondary_indices = secondary_indices
-        self.secondary_batch_size = batch_size - primary_batch_size
-        self.primary_batch_size = primary_batch_size
-
-        assert len(self.primary_indices) >= self.primary_batch_size > 0
-        assert len(self.secondary_indices) >= self.secondary_batch_size > 0
+class InfiniteSampler(Sampler):
+    def __init__(self, dataset_size, shuffle=True):
+        self.dataset_size = dataset_size
+        self.shuffle = shuffle
 
     def __iter__(self):
-        primary_iter = self.iterate_once(self.primary_indices)
-        secondary_iter = self.iterate_eternally(self.secondary_indices)
-        return (
-            primary_batch + secondary_batch
-            for (primary_batch, secondary_batch)
-            in  zip(self.grouper(primary_iter, self.primary_batch_size),
-                    self.grouper(secondary_iter, self.secondary_batch_size))
-        )
+        while True:
+            indices = torch.randperm(self.dataset_size) if self.shuffle \
+                      else torch.arange(self.dataset_size)
+            yield from indices.tolist()
 
     def __len__(self):
-        return len(self.primary_indices) // self.primary_batch_size
+        return self.dataset_size  # nominal length
 
-    def iterate_once(self, indices):
-        return np.random.permutation(indices)
+class SSLDataLoader:
+    def __init__(self, unlabeled_dataset, labeled_dataset,
+                 unlabeled_bs=256, labeled_bs=256, num_workers=4):
 
-    def iterate_eternally(self, indices):
-        def infinite_shuffles():
-            while True:
-                yield self.iterate_once(indices)
-        return itertools.chain.from_iterable(infinite_shuffles())
-
-    def grouper(self, iterable, n):
-        "Collect data into fixed-length chunks or blocks"
-        # grouper('ABCDEFG', 3) --> ABC DEF"
-        args = [iter(iterable)] * n
-        return zip(*args)
-
-
-def create_dataloaders(
-    train_ds: Dataset,
-    eval_ds: Dataset,
-    discard_unlabeled: bool,
-    labeled_batch_size: int,
-    batch_size: int,
-    labeled_indices: list[int],
-    unlabeled_indices: list[int],
-    workers: int,
-):
-    if discard_unlabeled:
-        subset_sampler = SubsetRandomSampler(labeled_indices)
-        batch_sampler = BatchSampler(subset_sampler, batch_size)
-    else:
-        batch_sampler = TwoStreamBatchSampler(
-            primary_indices=unlabeled_indices, 
-            secondary_indices=unlabeled_indices, 
-            batch_size=batch_size,
-            primary_batch_size=batch_size-labeled_batch_size
+        self.unlabeled_loader = DataLoader(
+            unlabeled_dataset,
+            batch_size=unlabeled_bs,
+            sampler=InfiniteSampler(len(unlabeled_dataset)),
+            num_workers=num_workers,
+            pin_memory=True,
+            drop_last=True,
         )
-    
-    train_loader = DataLoader(
-        dataset=train_ds,
-        batch_sampler=batch_sampler,
-        num_workers=workers,
-        pin_memory=True
-    )
-    eval_loader = DataLoader(
-        dataset=eval_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        pin_memory=True,
-        num_workers=workers
-    )
-    return train_loader, eval_loader
+
+        self.labeled_loader = DataLoader(
+            labeled_dataset,
+            batch_size=labeled_bs,
+            sampler=InfiniteSampler(len(labeled_dataset)),
+            num_workers=num_workers,
+            pin_memory=True,
+            drop_last=True,
+        )
+
+        self._unlabeled_iter = iter(self.unlabeled_loader)
+        self._labeled_iter   = iter(self.labeled_loader)
+
+    def __next__(self):
+        (x_u, y_u) = next(self._unlabeled_iter)
+        (x_l, y_l) = next(self._labeled_iter)
+        return (x_u, y_u), (x_l, y_l)
+
+    def __iter__(self):
+        return self
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="default")
@@ -128,22 +97,23 @@ def main(cfg):
     task = hydra.utils.instantiate(cfg.task)
     model = hydra.utils.instantiate(cfg.model).to(cfg.device)
     task["metrics"] = {k: m.to(cfg.device) for k, m in task["metrics"].items()}
- 
+    
     not_bn_params = [p for n, p in model.named_parameters() if "bn" not in n and "norm" not in n]
     bn_params = [p for n, p in model.named_parameters() if "bn" in n or "norm" in n]
 
-    optimizer = hydra.utils.instantiate(
-        cfg.optimizer,
+    optimizer = torch.optim.SGD(
         params=[
-            {"params": not_bn_params, "weight_decay": cfg.optimizer.weight_decay},
+            {"params": not_bn_params},
             {"params": bn_params, "weight_decay": 0.0}
         ],
-        lr=hyperparams.lr.v0
+        lr=hyperparams.lr.v0,
+        weight_decay=cfg.optimizer.weight_decay,
+        momentum=cfg.optimizer.momentum,
+        nesterov=cfg.optimizer.nesterov
     )
+    print(f"#Labeled: {len(task['train_ds_labeled'])}; #Unlabeled: {len(task['train_ds_unlabeled'])}")
 
-    print(f"#Labeled: {len(task['labeled_indices'])}; #Unlabeled: {len(task['unlabeled_indices'])}")
-
-    if cfg.wandb:
+    if cfg.log_wandb:
         import wandb
         wandb.init(
             project=cfg.wandb.project_name,
@@ -156,125 +126,134 @@ def main(cfg):
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in OmegaConf.to_container(hyperparams).items()])),
     )
-
-    train_loader, eval_loader = create_dataloaders(
-        task["train_ds"],
+    
+    # Create DataLoaders
+    eval_loader = DataLoader(
         task["eval_ds"],
-        discard_unlabeled=cfg.discard_unlabeled,
-        batch_size=hyperparams.batch_size,
-        labeled_batch_size=hyperparams.labeled_batch_size,
-        labeled_indices=task["labeled_indices"],
-        unlabeled_indices=task["unlabeled_indices"],
-        workers=hyperparams.workers
+        batch_size = hyperparams.batch_size,
+        num_workers = hyperparams.workers,
+        drop_last = False,
     )
 
-    optimizer = torch.optim.SGD(
-        params=[
-            {"params": not_bn_params},
-            {"params": bn_params, "weight_decay": 0.0}
-        ],
-        lr=hyperparams.lr.v0,
-        weight_decay=cfg.optimizer.weight_decay,
-        momentum=cfg.optimizer.momentum,
-        nesterov=cfg.optimizer.nesterov
-    )
-    torchinfo.summary(model, input_size=(1,)+task["train_ds"][0][0].shape, depth = 2)
+    if not hyperparams.discard_unlabeled:
+        train_loader = SSLDataLoader(
+            unlabeled_dataset = task["train_ds_unlabeled"],
+            labeled_dataset = task["train_ds_labeled"],
+            unlabeled_bs=hyperparams.batch_size-hyperparams.labeled_batch_size,
+            labeled_bs=hyperparams.labeled_batch_size,
+            num_workers=hyperparams.workers
+        )
+    else:
+         train_loader = iter(DataLoader(
+            task["train_ds_labeled"],
+            batch_size=hyperparams.batch_size,
+            sampler=InfiniteSampler(len(task["train_ds_labeled"])),
+            num_workers=hyperparams.workers,
+            pin_memory=True,
+            drop_last=True,
+        ))
+
+    torchinfo.summary(model, input_size=(1,)+task["train_ds_labeled"][0][0].shape, depth = 2)
 
     # Training Loop
     global_step = 0
+    pbar = tqdm(range(hyperparams.num_iterations), disable = not cfg.verbose)
 
-    for epoch in range(hyperparams.num_epochs):
-        
+    for iteration in range(hyperparams.num_iterations):
         model.train()
-
-        pbar = tqdm(train_loader, disable = not cfg.verbose)
-        num_batches = len(pbar)
-
-        for i, (x,y) in enumerate(pbar):
-            lr = cosine_schedule(
-                hyperparams.lr.v0, 
-                hyperparams.lr.vf, 
-                epoch + i/num_batches, 
-                hyperparams.lr.ramp_start,
-                hyperparams.lr.ramp_end
-            )
-            regularization_coeff = linear_schedule(
-                hyperparams.regularization_coeff.v0, 
-                hyperparams.regularization_coeff.vf, 
-                epoch + i /num_batches,
-                hyperparams.regularization_coeff.ramp_start,
-                hyperparams.regularization_coeff.ramp_end
-            )
-
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = lr 
-
-            x = x.to(cfg.device)
-            y = y.to(cfg.device)
-
-            l_indices = torch.ne(y, NO_LABEL).nonzero(as_tuple=True)
-            u_indices = torch.eq(y, NO_LABEL).nonzero(as_tuple=True)
-            
-            x = augment(x)
-            out_logits = model(x)
-            out_probs = F.softmax(out_logits, dim = -1)
-            
-            supervision_loss = ce_loss(
-                out_logits[l_indices],
-                y[l_indices]
-            )
-
-            regularization_loss = entropy(out_probs)
-
-            loss = supervision_loss + regularization_coeff * regularization_loss
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-  
-            with torch.no_grad():
-                out_logits = model(x[l_indices])
-            
-            pred = F.softmax(out_logits, dim=-1)
-
-            for k,m in task["metrics"].items():
-                m(pred,y[l_indices].float())
-
-            pbar.set_description(f"Epoch = {epoch+1}/{hyperparams.num_epochs}, LR = {lr:.5f}, Loss = {loss.detach().item():.3f} " + " ".join([f"{k}={m.compute():.3f}" for k,m in task["metrics"].items()]))
-            
-            global_step += hyperparams.batch_size
-            writer.add_scalar("lr", lr, global_step = global_step)
-            writer.add_scalar("regularization_coeff", regularization_coeff, global_step = global_step)
-            writer.add_scalar("supervision_loss", supervision_loss.detach().item(), global_step = global_step)
-            writer.add_scalar("regularization_loss", regularization_loss.detach().item(), global_step = global_step)
-            writer.add_scalar("loss", loss.detach().item(), global_step = global_step)
-
-        for k,m in task["metrics"].items():
-            writer.add_scalar("train/" + k, m.compute(), global_step = global_step)
-            m.reset()
-
-        model.eval()
-
-        for x,y in tqdm(eval_loader, disable = not cfg.verbose):
-            x = x.to(cfg.device)
-            y = y.to(cfg.device)
-            
-            with torch.no_grad():
-                out_logits = model(x)
-            
-            pred = F.softmax(out_logits, dim = -1) 
-
-            for k,m in task["metrics"].items():
-                m(pred,y.float())
-            
-            pbar.set_description(f"Eval Metrics: " + " ".join([f"{k}={m.compute():.3f}" for k,m in task["metrics"].items()]))
-            
-        for k,m in task["metrics"].items():
-            writer.add_scalar("eval/" + k, m.compute(), global_step = global_step)
-            m.reset()
         
+        if not hyperparams.discard_unlabeled:
+            (x_u, _), (x_l,y_l) = next(train_loader)
+            n_u = len(x_u)
+            x = torch.cat([x_u, x_l], dim=0)
+            x = x.to(cfg.device)
+            y_l = y_l.to(cfg.device)
+
+        else:
+            x, y_l = next(train_loader)
+            x = x.to(cfg.device)
+            y_l = y_l.to(cfg.device)
+            n_u = 0
+        
+        lr = cosine_schedule(
+            hyperparams.lr.v0, 
+            hyperparams.lr.vf, 
+            iteration, 
+            hyperparams.lr.ramp_start,
+            hyperparams.lr.ramp_end
+        )
+
+        regularization_coeff = linear_schedule(
+            hyperparams.regularization_coeff.v0, 
+            hyperparams.regularization_coeff.vf, 
+            iteration,
+            hyperparams.regularization_coeff.ramp_start,
+            hyperparams.regularization_coeff.ramp_end
+        )
+
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr 
+
+        x1, x2 = augment(x), augment(x)
+        out_logits_x1 = model(x1)
+         
+        with torch.no_grad(): out_logits_x2 = model(x2)
+            
+        out_probs_x1, out_probs_x2 = F.softmax(out_logits_x1, dim = -1), F.softmax(out_logits_x2, dim = -1) 
+            
+        supervision_loss = ce_loss(out_logits_x1[n_u:],y_l)
+
+        rescale_probs(out_probs_x2, hyperparams.sharpening_temperature)
+        
+        regularization_loss = entropy(out_probs_x1)
+
+        loss = supervision_loss + regularization_coeff * regularization_loss
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+  
+        with torch.no_grad(): 
+            out_probs_x_l = F.softmax(model(x[n_u:]), dim = -1)
+        
+        for k,m in task["metrics"].items():
+            m(out_probs_x_l,y_l.float())
+        
+        pbar.set_description(f"Iter = {iteration+1} / {hyperparams.num_iterations}, LR = {lr:.5f}, Loss = {loss.detach().item():.3f} " + " ".join([f"{k}={m.compute():.3f}" for k,m in task["metrics"].items()]))
+        pbar.update(1)
+
+        global_step += hyperparams.batch_size
+        writer.add_scalar("lr", lr, global_step = global_step)
+        writer.add_scalar("regularization_coeff", regularization_coeff, global_step = global_step)
+        writer.add_scalar("supervision_loss", supervision_loss.detach().item(), global_step = global_step)
+        writer.add_scalar("regularization_loss", regularization_loss.detach().item(), global_step = global_step)
+        writer.add_scalar("loss", loss.detach().item(), global_step = global_step)
+
+        
+        if (iteration + 1) % hyperparams.eval_frequency == 0: 
+            for k,m in task["metrics"].items():
+                writer.add_scalar("train/" + k, m.compute(), global_step = global_step)
+                m.reset()
+
+            model.eval()
+
+            for x,y in eval_loader:
+                x = x.to(cfg.device)
+                y = y.to(cfg.device)
+            
+                with torch.no_grad():
+                    out_probs_x = F.softmax(model(x), dim = -1) 
+
+                for k,m in task["metrics"].items():
+                    m(out_probs_x,y.float())
+            
+            for k,m in task["metrics"].items():
+                writer.add_scalar("eval/" + k, m.compute(), global_step = global_step)
+                m.reset()
+        
+
     writer.close()
-    if cfg.wandb:
+    if cfg.log_wandb:
         wandb.finish()
 
 if __name__ == "__main__":
