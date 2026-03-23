@@ -2,6 +2,9 @@ defaults:
   - task: cifar10
   - _self_
 
+task:
+  labeling_ratio: 0.08
+
 model:
   _target_: clean_SemiSL.model.custom.ResNet32x32
   block_name: "shake"
@@ -11,32 +14,32 @@ model:
   downsample: "shift_conv"
 
 optimizer:
-  _target_: torch.optim.SGD
+  name: "adam"
   weight_decay: 1e-4
-  momentum: 0.9
-  nesterov: True
 
 hyperparams:
   workers: 4 
-  num_iterations: 500_000
+  num_iterations: 200_000
   eval_frequency: 1_000
   discard_unlabeled: False
   batch_size: 200
   labeled_batch_size: 100
+  sharpening_temperature: 0.5
   
   lr:
-    v0: 0.1
-    vf: 0.01
-    ramp_start: 0
-    ramp_end: 500_000 
-  
-  regularization_name: "pseudo_label"
-  sharpening_temperature: 0.5
+    schedule_type: "decay"
+    v0: 0.003
+    decay_factor: 0.2
+    decay_period: 0.5
+    schedule_start: 0.0
+    schedule_end: 1.0
+
   regularization_coeff: 
+    schedule_type: "linear" 
     v0: 0.0
-    vf: 0.5
-    ramp_start: 0
-    ramp_end: 200_000 
+    vf: 5.0
+    schedule_start: 0.0
+    schedule_end: 0.2
 
 device: "cuda"
 verbose: True

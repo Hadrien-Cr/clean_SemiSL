@@ -1,20 +1,18 @@
-import itertools
 from omegaconf import DictConfig, OmegaConf
 import hydra
 from tqdm import tqdm
 import wandb
-import math
 
-import numpy as np
 import torch
 import torchinfo
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset, DataLoader
-from torch.utils.data.sampler import Sampler, BatchSampler, SubsetRandomSampler
+from torch.utils.data.sampler import Sampler
 from torch.nn import functional as F
 from torchvision.transforms import v2
 
 from clean_SemiSL.utils.plot_utils import plot_batch
+from clean_SemiSL.utils.schedulers import find_schedule
 
 NO_LABEL = -1
 
@@ -24,21 +22,8 @@ augment = v2.Compose([
     v2.AugMix()
 ])
 
-def linear_schedule(initial_value, final_value, t, t_start, t_end):
-    progress = np.clip((t-t_start)/(t_end-t_start), 0, 1)
-    return initial_value + (final_value - initial_value) * progress
-
-def cosine_schedule(initial_value, final_value, t, t_start, t_end):
-    progress = np.clip((t-t_start)/(t_end-t_start), 0, 1)
-    return final_value + (initial_value - final_value) * (1 + np.cos(np.pi * progress)) / 2 
-
-def rescale_probs(probs, temperature):
-    logits = torch.log(probs.clamp(min=1e-9))
-    scaled = F.softmax(logits / temperature, dim=-1)
-    return scaled.clamp(min=1e-9, max=1 - 1e-9) 
-
 def ce_loss(out_logits, target):
-    return F.cross_entropy(out_logits, target)
+    return F.cross_entropy(out_logits, target, reduction = "mean")
 
 def entropy(probs):
     return -(probs * probs.log().clamp(min=-1e7)).sum(dim=-1).mean()
@@ -91,7 +76,7 @@ class SSLDataLoader:
         return self
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="default")
+@hydra.main(version_base=None, config_path="configs", config_name="entmin")
 def main(cfg): 
     hyperparams = cfg.hyperparams
     task = hydra.utils.instantiate(cfg.task)
@@ -101,33 +86,44 @@ def main(cfg):
     not_bn_params = [p for n, p in model.named_parameters() if "bn" not in n and "norm" not in n]
     bn_params = [p for n, p in model.named_parameters() if "bn" in n or "norm" in n]
 
-    optimizer = torch.optim.SGD(
-        params=[
-            {"params": not_bn_params},
-            {"params": bn_params, "weight_decay": 0.0}
-        ],
-        lr=hyperparams.lr.v0,
-        weight_decay=cfg.optimizer.weight_decay,
-        momentum=cfg.optimizer.momentum,
-        nesterov=cfg.optimizer.nesterov
-    )
-    print(f"#Labeled: {len(task['train_ds_labeled'])}; #Unlabeled: {len(task['train_ds_unlabeled'])}")
+ 
+    if cfg.optimizer.name == "sgd":
+        optimizer = torch.optim.SGD(
+            params=[
+                {"params": not_bn_params},
+                {"params": bn_params, "weight_decay": 0.0}
+            ],
+            lr=hyperparams.lr.v0,
+            weight_decay=cfg.optimizer.weight_decay,
+            nesterov=cfg.optimizer.nesterov
+        )
+    elif cfg.optimizer.name == "adam":
+        optimizer = torch.optim.SGD(
+            params=[
+                {"params": not_bn_params},
+                {"params": bn_params, "weight_decay": 0.0}
+            ],
+            lr=hyperparams.lr.v0,
+            weight_decay=cfg.optimizer.weight_decay,
+        )
 
     if cfg.log_wandb:
-        import wandb
         wandb.init(
             project=cfg.wandb.project_name,
             sync_tensorboard=True,
-            config=OmegaConf.to_container(hyperparams),
+            config=OmegaConf.to_container(hyperparams), # type: ignore
             name=cfg.run_name,
         )
     writer = SummaryWriter(f"runs/{cfg.run_name}")
     writer.add_text(
         "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in OmegaConf.to_container(hyperparams).items()])),
+        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" 
+        for key, value in OmegaConf.to_container(hyperparams).items()])), #type: ignore
     )
     
     # Create DataLoaders
+    print(f"#Labeled: {len(task['train_ds_labeled'])}; #Unlabeled: {len(task['train_ds_unlabeled'])}")
+
     eval_loader = DataLoader(
         task["eval_ds"],
         batch_size = hyperparams.batch_size,
@@ -175,37 +171,20 @@ def main(cfg):
             y_l = y_l.to(cfg.device)
             n_u = 0
         
-        lr = cosine_schedule(
-            hyperparams.lr.v0, 
-            hyperparams.lr.vf, 
-            iteration, 
-            hyperparams.lr.ramp_start,
-            hyperparams.lr.ramp_end
-        )
-
-        regularization_coeff = linear_schedule(
-            hyperparams.regularization_coeff.v0, 
-            hyperparams.regularization_coeff.vf, 
-            iteration,
-            hyperparams.regularization_coeff.ramp_start,
-            hyperparams.regularization_coeff.ramp_end
-        )
-
+        lr = find_schedule(hyperparams.lr, t = iteration/hyperparams.num_iterations)
+        regularization_coeff = find_schedule(hyperparams.regularization_coeff, t = iteration/hyperparams.num_iterations)
+        
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr 
 
-        x1, x2 = augment(x), augment(x)
-        out_logits_x1 = model(x1)
+        x = augment(x)
+        out_logits = model(x)
          
-        with torch.no_grad(): out_logits_x2 = model(x2)
+        out_probs = F.softmax(out_logits, dim = -1) 
             
-        out_probs_x1, out_probs_x2 = F.softmax(out_logits_x1, dim = -1), F.softmax(out_logits_x2, dim = -1) 
-            
-        supervision_loss = ce_loss(out_logits_x1[n_u:],y_l)
+        supervision_loss = ce_loss(out_logits[n_u:],y_l)
 
-        rescale_probs(out_probs_x2, hyperparams.sharpening_temperature)
-        
-        regularization_loss = entropy(out_probs_x1)
+        regularization_loss =entropy(out_probs)
 
         loss = supervision_loss + regularization_coeff * regularization_loss
 
@@ -219,7 +198,8 @@ def main(cfg):
         for k,m in task["metrics"].items():
             m(out_probs_x_l,y_l.float())
         
-        pbar.set_description(f"Iter = {iteration+1} / {hyperparams.num_iterations}, LR = {lr:.5f}, Loss = {loss.detach().item():.3f} " + " ".join([f"{k}={m.compute():.3f}" for k,m in task["metrics"].items()]))
+        pbar.set_description(f"Iter = {iteration+1} / {hyperparams.num_iterations}, LR = {lr:.5f}, Loss = {loss.detach().item():.3f} " 
+            + " ".join([f"{k}={m.compute():.3f}" for k,m in task["metrics"].items()]))
         pbar.update(1)
 
         global_step += hyperparams.batch_size
