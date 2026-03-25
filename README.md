@@ -56,15 +56,17 @@
 
 ## RoadMap
 
-[x] - Pi-Model
-[x] - Entmin
-[ ] - Virtual Adversarial Training
-[ ] - Temporal Ensembling
-[ ] - Mean Teacher
-[ ] - SimCLR
-[ ] - MixMatch
-[ ] - FixMatch
-[ ] - SimMatch
-[ ] - Consistency-based for Object Detection
-[ ] - Unbiased Teacher for Object Detection
+- [x] Pi-Model
+- [x] Entmin
+- [ ] Self-Training
+- [ ] Pseudo-Labeling
+- [ ] Virtual Adversarial Training
+- [ ] Temporal Ensembling
+- [ ] Mean Teacher
+- [ ] SimCLR
+- [ ] MixMatch
+- [ ] FixMatch
+- [ ] SimMatch
+- [ ] Consistency-based for Object Detection
+- [ ] Unbiased Teacher for Object Detection
 
