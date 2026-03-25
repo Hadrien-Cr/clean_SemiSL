@@ -1,3 +1,20 @@
+## RoadMap
+
+- [x] Pi-Model
+- [x] Entmin
+- [ ] Self-Training
+- [ ] Pseudo-Labeling
+- [ ] Virtual Adversarial Training
+- [ ] Temporal Ensembling
+- [ ] Mean Teacher
+- [ ] SimCLR
+- [ ] MixMatch
+- [ ] FixMatch
+- [ ] SimMatch
+- [ ] STAC
+- [ ] Unbiased Teacher for Object Detection
+- [ ] Active Teacher for Object Detection
+
 ## PI-Model (`pi_model.py`)
 ```
     for iteration in range(hyperparams.num_iterations):
@@ -54,19 +71,7 @@
         optimizer.step()
 ```
 
-## RoadMap
-
-- [x] Pi-Model
-- [x] Entmin
-- [ ] Self-Training
-- [ ] Pseudo-Labeling
-- [ ] Virtual Adversarial Training
-- [ ] Temporal Ensembling
-- [ ] Mean Teacher
-- [ ] SimCLR
-- [ ] MixMatch
-- [ ] FixMatch
-- [ ] SimMatch
-- [ ] Consistency-based for Object Detection
-- [ ] Unbiased Teacher for Object Detection
-
+## A list curated in STAC https://arxiv.org/pdf/2005.04757
+![Copied from https://arxiv.org/pdf/2005.04757](assets/ssl_biblio.png)
+![Copied from https://arxiv.org/pdf/2005.04757](assets/ssl_biblio_1.png)
+![Copied from https://arxiv.org/pdf/2005.04757](assets/ssl_biblio_2.png)
