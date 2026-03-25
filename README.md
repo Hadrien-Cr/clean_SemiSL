@@ -1,58 +1,70 @@
-## Pseudo-Label (`pseudo_label.py`)
-
+## PI-Model (`pi_model.py`)
 ```
-for x,y in train_loader:
-	l_indices = torch.ne(y, NO_LABEL).nonzero(as_tuple=True)
-	u_indices = torch.eq(y, NO_LABEL).nonzero(as_tuple=True)
-	x1, x2 = augment(x), augment(x)
-	out_logits_x1 = model(x1)
-
-	with torch.no_grad(): out_logits_x2 = model(x2)
-	    
-	out_probs_x1, out_probs_x2 = F.softmax(out_logits_x1, dim = -1), F.softmax(out_logits_x2, dim = -1) 
-	    
-	supervision_loss = bce_loss(
-		out_probs_x1[l_indices],
-		F.one_hot(y[l_indices], task["num_classes"]).float()
-	)
-
-	pseudo_label = rescale_probs(out_probs_x2, hyperparams.sharpening_temperature)
+    for iteration in range(hyperparams.num_iterations):
+        model.train()
         
-	regularization_loss = kl_div_loss(
-	        out_probs_x1,
-		pseudo_label
-	)
+        (x_u, _), (x_l,y_l) = next(train_loader)
+        n_u = len(x_u)
+        x = torch.cat([x_u, x_l], dim=0)
+        x = x.to(cfg.device)
+        y_l = y_l.to(cfg.device)
 
-	loss = supervision_loss + regularization_coeff * regularization_loss
+        x1, x2 = augment(x), augment(x)
+        out_logits_x1 = model(x1)
+         
+        with torch.no_grad(): out_logits_x2 = model(x2)
+            
+        out_probs_x1, out_probs_x2 = F.softmax(out_logits_x1, dim = -1), F.softmax(out_logits_x2, dim = -1) 
+            
+        supervision_loss = ce_loss(out_logits_x1[n_u:],y_l)
 
-	optimizer.zero_grad()
-	loss.backward()
-	optimizer.step()
-```  
+        regularization_loss = mse_loss(out_probs_x1,out_probs_x2)
+    
+        loss = supervision_loss + regularization_coeff * regularization_loss
 
-
-## EntMin (`entmin.py`)
-
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 ```
-for x,y in train_loader:
-	l_indices = torch.ne(y, NO_LABEL).nonzero(as_tuple=True)
-	u_indices = torch.eq(y, NO_LABEL).nonzero(as_tuple=True)
-            
-	x = augment(x)
-	out_logits = model(x)
-	out_probs = F.softmax(out_logits, dim = -1)
-            
-	supervision_loss = bce_loss(
-		out_probs[l_indices],
-		F.one_hot(y[l_indices], task["num_classes"]).float()
-	)
-	
-	regularization_loss = entropy(out_probs)
 
-	loss = supervision_loss + regularization_coeff * regularization_loss
+## Entropy Minimization (`entmin.py`)
+```
+    for iteration in range(hyperparams.num_iterations):
+        model.train()
+        
+        (x_u, _), (x_l,y_l) = next(train_loader)
+        n_u = len(x_u)
+        x = torch.cat([x_u, x_l], dim=0)
+        x = x.to(cfg.device)
+        y_l = y_l.to(cfg.device)
 
-	optimizer.zero_grad()
-	loss.backward()
-	optimizer.step()
-```  
+        x = augment(x)
+        out_logits = model(x)
+         
+        out_probs = F.softmax(out_logits, dim = -1) 
+            
+        supervision_loss = ce_loss(out_logits[n_u:],y_l)
+
+        regularization_loss = entropy(out_probs)
+    
+        loss = supervision_loss + regularization_coeff * regularization_loss
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+```
+
+## RoadMap
+
+[x] - Pi-Model
+[x] - Entmin
+[ ] - Virtual Adversarial Training
+[ ] - Temporal Ensembling
+[ ] - Mean Teacher
+[ ] - SimCLR
+[ ] - MixMatch
+[ ] - FixMatch
+[ ] - SimMatch
+[ ] - Consistency-based for Object Detection
+[ ] - Unbiased Teacher for Object Detection
 

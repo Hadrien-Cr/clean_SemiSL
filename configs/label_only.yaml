@@ -14,21 +14,22 @@ model:
   downsample: "shift_conv"
 
 optimizer:
-  name: "adam"
+  name: "sgd"
   weight_decay: 1e-4
+  nesterov: True
+  momentum: 0.9
 
 hyperparams:
   workers: 4 
-  num_iterations: 200_000
+  num_iterations: 50_000
   eval_frequency: 1_000
-  discard_unlabeled: False
+  discard_unlabeled: True
   batch_size: 200
-  labeled_batch_size: 100
-  sharpening_temperature: 0.5
+  label_smoothing: 0.1
   
   lr:
     schedule_type: "decay"
-    v0: 0.003
+    v0: 0.1
     decay_factor: 0.2
     decay_period: 0.5
     schedule_start: 0.0
@@ -46,4 +47,4 @@ verbose: True
 log_wandb: True
 wandb:
   project_name: "clean_SemiSL"
-run_name: "cifar10_pseudo_label"
+run_name: "cifar10_label_only"

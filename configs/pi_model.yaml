@@ -27,22 +27,25 @@ hyperparams:
   batch_size: 200
   labeled_batch_size: 100
   label_smoothing: 0.0
-  
+
   lr:
     schedule_type: "decay"
-    v0: 0.02
+    v0: 0.1
     decay_factor: 0.2
-    decay_period: 0.5 
+    decay_period: 0.5
     schedule_start: 0.0
     schedule_end: 1.0
 
   regularization_coeff: 
-    schedule_type: "constant" 
-    v0: 0.1 
+    schedule_type: "linear" 
+    v0: 0.0
+    vf: 5.0
+    schedule_start: 0.0
+    schedule_end: 0.2
 
 device: "cuda"
 verbose: True
 log_wandb: True
 wandb:
   project_name: "clean_SemiSL"
-run_name: "cifar10_entmin"
+run_name: "cifar10_pi_model"

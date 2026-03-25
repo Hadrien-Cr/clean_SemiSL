@@ -34,8 +34,8 @@ def kl_div_loss(out_probs, target_probs):
     log_pred = torch.log(out_probs.clamp(min=1e-9))
     return F.kl_div(log_pred, target_probs, reduction="batchmean")
 
-def ce_loss(out_logits, target):
-    return F.cross_entropy(out_logits, target, reduction="mean")
+def ce_loss(out_logits, target, label_smoothing=0.0):
+    return F.cross_entropy(out_logits, target, label_smoothing=label_smoothing, reduction="mean")
 
 
 class InfiniteSampler(Sampler):
@@ -86,7 +86,7 @@ class SSLDataLoader:
         return self
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="pseudo_label")
+@hydra.main(version_base=None, config_path="configs", config_name="pi_model")
 def main(cfg): 
     hyperparams = cfg.hyperparams
     task = hydra.utils.instantiate(cfg.task)
@@ -104,7 +104,8 @@ def main(cfg):
             ],
             lr=hyperparams.lr.v0,
             weight_decay=cfg.optimizer.weight_decay,
-            nesterov=cfg.optimizer.nesterov
+            nesterov=cfg.optimizer.nesterov,
+            momentum=cfg.optimizer.momentum
         )
 
     elif cfg.optimizer.name == "adam":
@@ -196,15 +197,10 @@ def main(cfg):
         with torch.no_grad(): out_logits_x2 = model(x2)
             
         out_probs_x1, out_probs_x2 = F.softmax(out_logits_x1, dim = -1), F.softmax(out_logits_x2, dim = -1) 
-            
-        supervision_loss = ce_loss(out_logits_x1[n_u:],y_l)
-
-        pseudo_label = rescale_probs(out_probs_x2, hyperparams.sharpening_temperature)
         
-        regularization_loss = mse_loss(
-            out_probs_x1,
-            pseudo_label
-        )
+        supervision_loss = ce_loss(out_logits_x1[n_u:],y_l, hyperparams.get("label_smoothing",0.0))
+
+        regularization_loss = mse_loss(out_probs_x1,out_probs_x2) 
     
         loss = supervision_loss + regularization_coeff * regularization_loss
 

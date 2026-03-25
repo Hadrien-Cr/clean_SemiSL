@@ -22,8 +22,8 @@ augment = v2.Compose([
     v2.AugMix()
 ])
 
-def ce_loss(out_logits, target):
-    return F.cross_entropy(out_logits, target, reduction = "mean")
+def ce_loss(out_logits, target, label_smoothing=0.0):
+    return F.cross_entropy(out_logits, target, label_smoothing=label_smoothing, reduction="mean")
 
 def entropy(probs):
     return -(probs * probs.log().clamp(min=-1e7)).sum(dim=-1).mean()
@@ -95,7 +95,8 @@ def main(cfg):
             ],
             lr=hyperparams.lr.v0,
             weight_decay=cfg.optimizer.weight_decay,
-            nesterov=cfg.optimizer.nesterov
+            nesterov=cfg.optimizer.nesterov,
+            momentum=cfg.optimizer.momentum
         )
     elif cfg.optimizer.name == "adam":
         optimizer = torch.optim.SGD(
@@ -182,9 +183,9 @@ def main(cfg):
          
         out_probs = F.softmax(out_logits, dim = -1) 
             
-        supervision_loss = ce_loss(out_logits[n_u:],y_l)
+        supervision_loss = ce_loss(out_logits[n_u:],y_l, hyperparams.get("label_smoothing",0.0))
 
-        regularization_loss =entropy(out_probs)
+        regularization_loss = entropy(out_probs)
 
         loss = supervision_loss + regularization_coeff * regularization_loss
 
