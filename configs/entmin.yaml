@@ -29,16 +29,15 @@ hyperparams:
   label_smoothing: 0.0
   
   lr:
-    schedule_type: "decay"
-    v0: 0.02
-    decay_factor: 0.2
-    decay_period: 0.5 
-    schedule_start: 0.0
-    schedule_end: 1.0
+    schedules:
+      - schedule_type: "decay"
+        v0: 0.02
+        decay_factor: 0.2
+        decay_period: 0.5 
+        schedule_start: 0.0
+        schedule_end: 1.0
 
-  regularization_coeff: 
-    schedule_type: "constant" 
-    v0: 0.1 
+  regularization_coeff: 0.1 
 
 device: "cuda"
 verbose: True

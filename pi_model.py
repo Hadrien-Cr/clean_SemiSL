@@ -12,7 +12,7 @@ from torch.nn import functional as F
 from torchvision.transforms import v2
 
 from clean_SemiSL.utils.plot_utils import plot_batch
-from clean_SemiSL.utils.schedulers import find_schedule
+from clean_SemiSL.utils.schedulers import resolve_schedules 
 
 NO_LABEL = -1
 
@@ -95,6 +95,9 @@ def main(cfg):
     
     not_bn_params = [p for n, p in model.named_parameters() if "bn" not in n and "norm" not in n]
     bn_params = [p for n, p in model.named_parameters() if "bn" in n or "norm" in n]
+
+    lr = hyperparams.lr if isinstance(hyperparams.lr, float) else 0.0 # filled in the training loop
+    regularization_coeff = hyperparams.regularization_coeff if isinstance(hyperparams.regularization_coeff, float) else 0.0 # filled in the training loop 
     
     if cfg.optimizer.name == "sgd":
         optimizer = torch.optim.SGD(
@@ -102,24 +105,20 @@ def main(cfg):
                 {"params": not_bn_params},
                 {"params": bn_params, "weight_decay": 0.0}
             ],
-            lr=hyperparams.lr.v0,
+            lr=lr,
             weight_decay=cfg.optimizer.weight_decay,
             nesterov=cfg.optimizer.nesterov,
             momentum=cfg.optimizer.momentum
         )
-
     elif cfg.optimizer.name == "adam":
         optimizer = torch.optim.SGD(
             params=[
                 {"params": not_bn_params},
                 {"params": bn_params, "weight_decay": 0.0}
             ],
-            lr=hyperparams.lr.v0,
+            lr=lr,
             weight_decay=cfg.optimizer.weight_decay,
         )
-    else:
-        raise ValueError
-
 
     if cfg.log_wandb:
         wandb.init(
@@ -172,6 +171,20 @@ def main(cfg):
     for iteration in range(hyperparams.num_iterations):
         model.train()
         
+        if isinstance(hyperparams.lr, DictConfig) and "schedules" in hyperparams.lr:
+            lr = resolve_schedules(
+                hyperparams.lr["schedules"], 
+                t = iteration/hyperparams.num_iterations
+            )
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr 
+        
+        if isinstance(hyperparams.regularization_coeff, DictConfig) and "schedules" in hyperparams.regularization_coeff:
+            regularization_coeff = resolve_schedules(
+                hyperparams.regularization_coeff["schedules"], 
+                t = iteration/hyperparams.num_iterations
+            )
+
         if not hyperparams.discard_unlabeled:
             (x_u, _), (x_l,y_l) = next(train_loader)
             n_u = len(x_u)
@@ -185,23 +198,21 @@ def main(cfg):
             y_l = y_l.to(cfg.device)
             n_u = 0
         
-        lr = find_schedule(hyperparams.lr, t = iteration/hyperparams.num_iterations)
-        regularization_coeff = find_schedule(hyperparams.regularization_coeff, t = iteration/hyperparams.num_iterations)
-
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr 
-
         x1, x2 = augment(x), augment(x)
+        
         out_logits_x1 = model(x1)
-         
         with torch.no_grad(): out_logits_x2 = model(x2)
             
-        out_probs_x1, out_probs_x2 = F.softmax(out_logits_x1, dim = -1), F.softmax(out_logits_x2, dim = -1) 
+        out_probs_x1 = F.softmax(out_logits_x1, dim = -1)
+        out_probs_x2 = F.softmax(out_logits_x2, dim = -1) 
         
         supervision_loss = ce_loss(out_logits_x1[n_u:],y_l, hyperparams.get("label_smoothing",0.0))
+        
+        if regularization_coeff > 0.0:
+            regularization_loss = mse_loss(out_probs_x1,out_probs_x2) 
+        else:
+            regularization_loss = torch.tensor(0.0)
 
-        regularization_loss = mse_loss(out_probs_x1,out_probs_x2) 
-    
         loss = supervision_loss + regularization_coeff * regularization_loss
 
         optimizer.zero_grad()
@@ -214,7 +225,7 @@ def main(cfg):
         for k,m in task["metrics"].items():
             m(out_probs_x_l,y_l.float())
         
-        pbar.set_description(f"Iter = {iteration+1} / {hyperparams.num_iterations}, LR = {lr:.5f}, Loss = {loss.detach().item():.3f} " 
+        pbar.set_description(f"Iter = {iteration+1} / {hyperparams.num_iterations}, LR = {lr:.5f}, RegCoeff = {regularization_coeff:.3f}, Loss = {loss.detach().item():.3f} " 
             + " ".join([f"{k}={m.compute():.3f}" for k,m in task["metrics"].items()]))
         pbar.update(1)
 

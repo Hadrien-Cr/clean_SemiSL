@@ -1,7 +1,16 @@
 from omegaconf import DictConfig
 import numpy as np
 
-def find_schedule(schedule_info: DictConfig, t: float):
+def resolve_schedules(schedules: list[DictConfig], t: float):
+    n = len(schedules)
+
+    for k, schedule in enumerate(schedules):
+        if schedule.schedule_start <= t <= schedule.schedule_end:
+            return compute_value(schedule, t)
+    
+    return compute_value(schedule, t)
+
+def compute_value(schedule_info: DictConfig, t: float) -> float:
     if schedule_info.schedule_type == "constant":
         return schedule_info.v0
     if schedule_info.schedule_type == "decay":

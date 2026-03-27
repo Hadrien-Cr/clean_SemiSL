@@ -27,6 +27,7 @@ hyperparams:
   batch_size: 200
   labeled_batch_size: 100
   label_smoothing: 0.0
+  ema_alpha: 0.999
 
   lr:
     schedules:
@@ -55,4 +56,4 @@ verbose: True
 log_wandb: True
 wandb:
   project_name: "clean_SemiSL"
-run_name: "cifar10_pi_model"
+run_name: "cifar10_mean_teacher"

@@ -25,8 +25,8 @@ augment = v2.Compose([
 def ce_loss(out_logits, target, label_smoothing=0.0):
     return F.cross_entropy(out_logits, target, label_smoothing=label_smoothing, reduction="mean")
 
-def entropy(probs):
-    return -(probs * probs.log().clamp(min=-1e7)).sum(dim=-1).mean()
+def kl_div(out_probs, target_probs):
+    return F.kl_div(out_probs.log(), target_probs, reduction="batchmean")
 
 class InfiniteSampler(Sampler):
     def __init__(self, dataset_size, shuffle=True):
@@ -76,7 +76,7 @@ class SSLDataLoader:
         return self
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="entmin")
+@hydra.main(version_base=None, config_path="configs", config_name="self_training")
 def main(cfg): 
     hyperparams = cfg.hyperparams
     task = hydra.utils.instantiate(cfg.task)
@@ -188,18 +188,26 @@ def main(cfg):
             y_l = y_l.to(cfg.device)
             n_u = 0
         
-        x = augment(x)
-        out_logits = model(x)
-         
-        out_probs = F.softmax(out_logits, dim = -1) 
-            
-        supervision_loss = ce_loss(out_logits[n_u:],y_l, hyperparams.get("label_smoothing",0.0))
+        x1, x2 = augment(x), augment(x)
+        
+        out_logits_x1 = model(x1)
+        with torch.no_grad(): out_logits_x2 = model(x2)
+          
+        out_probs_x1 = F.softmax(out_logits_x1, dim = -1) 
+        out_probs_x2 = F.softmax(out_logits_x1, dim = -1)
 
-        if regularization_coeff > 0.0:
-            regularization_loss = entropy(out_probs)
+        supervision_loss = ce_loss(out_logits_x1[n_u:],y_l, hyperparams.get("label_smoothing",0.0))
+
+        if regularization_coeff > 0:
+            confident_predictions_indices = (out_probs_x1[:n_u].amax(dim = -1) > hyperparams.confidence_threshold)
+            
+            if confident_predictions_indices.any():
+                regularization_loss = kl_div(out_probs_x1[:n_u][confident_predictions_indices], out_probs_x2[:n_u][confident_predictions_indices])
+            else:
+                regularization_loss = torch.tensor(0.0)
         else:
             regularization_loss = torch.tensor(0.0)
-        
+
         loss = supervision_loss + regularization_coeff * regularization_loss
 
         optimizer.zero_grad()

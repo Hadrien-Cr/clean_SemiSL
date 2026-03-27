@@ -28,6 +28,9 @@ def ce_loss(out_logits, target, label_smoothing=0.0):
 def entropy(probs):
     return -(probs * probs.log().clamp(min=-1e7)).sum(dim=-1).mean()
 
+def kl_div(out_probs, target_probs):
+    return F.kl_div(out_probs.log(), target_probs, reduction="batchmean")
+
 class InfiniteSampler(Sampler):
     def __init__(self, dataset_size, shuffle=True):
         self.dataset_size = dataset_size
@@ -76,7 +79,7 @@ class SSLDataLoader:
         return self
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="entmin")
+@hydra.main(version_base=None, config_path="configs", config_name="vat_entmin")
 def main(cfg): 
     hyperparams = cfg.hyperparams
     task = hydra.utils.instantiate(cfg.task)
@@ -194,12 +197,30 @@ def main(cfg):
         out_probs = F.softmax(out_logits, dim = -1) 
             
         supervision_loss = ce_loss(out_logits[n_u:],y_l, hyperparams.get("label_smoothing",0.0))
+        
+        if regularization_coeff > 0:
+            # Compute VAT Loss
+            xi, epsilon  = 1e-6, 2
+            x_u = x[:n_u].detach()
+            adversarial_perturbation = torch.Tensor(x_u.shape).normal_().to(cfg.device)
+            adversarial_perturbation = xi * F.normalize(adversarial_perturbation)
+            adversarial_perturbation.requires_grad_(True)
 
-        if regularization_coeff > 0.0:
-            regularization_loss = entropy(out_probs)
+            out_perturb = model(x_u + adversarial_perturbation)
+            divergence = kl_div(F.softmax(out_perturb, dim = -1), out_probs[:n_u].detach())
+            divergence.backward()
+
+            adversarial_perturbation = adversarial_perturbation.grad.data.clone()
+            model.zero_grad()
+            adversarial_perturbation = epsilon * F.normalize(adversarial_perturbation)
+            out_perturb = model(x_u + adversarial_perturbation.detach())
+            vat_loss = kl_div(F.softmax(out_perturb, dim = -1), out_probs[:n_u].detach())
+            
+            entmin_loss = entropy(out_probs[:n_u])
+            regularization_loss = vat_loss + entmin_loss 
         else:
             regularization_loss = torch.tensor(0.0)
-        
+
         loss = supervision_loss + regularization_coeff * regularization_loss
 
         optimizer.zero_grad()

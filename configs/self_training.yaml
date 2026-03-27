@@ -27,32 +27,28 @@ hyperparams:
   batch_size: 200
   labeled_batch_size: 100
   label_smoothing: 0.0
-
+  confidence_threshold: 0.8
+  
   lr:
     schedules:
-      - schedule_type: "linear"
-        v0: 0.0
-        vf: 0.1
-        schedule_start: 0.0
-        schedule_end: 0.2
       - schedule_type: "decay"
         v0: 0.1
         decay_factor: 0.2
         decay_period: 0.5
-        schedule_start: 0.2
+        schedule_start: 0.0
         schedule_end: 1.0
 
   regularization_coeff: 
     schedules:
       - schedule_type: "linear" 
         v0: 0.0
-        vf: 5.0
-        schedule_start: 0.2
-        schedule_end: 0.4
+        vf: 0.5
+        schedule_start: 0.0
+        schedule_end: 0.5
 
 device: "cuda"
 verbose: True
 log_wandb: True
 wandb:
   project_name: "clean_SemiSL"
-run_name: "cifar10_pi_model"
+run_name: "cifar10_self_training"

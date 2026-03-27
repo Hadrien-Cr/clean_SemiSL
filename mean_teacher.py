@@ -1,4 +1,4 @@
-from omegaconf import DictConfig, ListConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf
 import hydra
 from tqdm import tqdm
 import wandb
@@ -22,11 +22,21 @@ augment = v2.Compose([
     v2.AugMix()
 ])
 
+def rescale_probs(probs, temperature):
+    logits = torch.log(probs.clamp(min=1e-9))
+    scaled = F.softmax(logits / temperature, dim=-1)
+    return scaled.clamp(min=1e-9, max=1 - 1e-9) 
+
+def mse_loss(out_logits, target_logits):
+    return F.mse_loss(out_logits, target_logits, reduction = "mean")
+
+def kl_div_loss(out_probs, target_probs):
+    log_pred = torch.log(out_probs.clamp(min=1e-9))
+    return F.kl_div(log_pred, target_probs, reduction="batchmean")
+
 def ce_loss(out_logits, target, label_smoothing=0.0):
     return F.cross_entropy(out_logits, target, label_smoothing=label_smoothing, reduction="mean")
 
-def entropy(probs):
-    return -(probs * probs.log().clamp(min=-1e7)).sum(dim=-1).mean()
 
 class InfiniteSampler(Sampler):
     def __init__(self, dataset_size, shuffle=True):
@@ -76,11 +86,16 @@ class SSLDataLoader:
         return self
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="entmin")
+@hydra.main(version_base=None, config_path="configs", config_name="mean_teacher")
 def main(cfg): 
     hyperparams = cfg.hyperparams
     task = hydra.utils.instantiate(cfg.task)
     model = hydra.utils.instantiate(cfg.model).to(cfg.device)
+    ema_model = hydra.utils.instantiate(cfg.model).to(cfg.device)
+    
+    for param in ema_model.parameters():
+        param.detach_()
+    
     task["metrics"] = {k: m.to(cfg.device) for k, m in task["metrics"].items()}
     
     not_bn_params = [p for n, p in model.named_parameters() if "bn" not in n and "norm" not in n]
@@ -126,7 +141,7 @@ def main(cfg):
     
     # Create DataLoaders
     print(f"#Labeled: {len(task['train_ds_labeled'])}; #Unlabeled: {len(task['train_ds_unlabeled'])}")
-
+    
     eval_loader = DataLoader(
         task["eval_ds"],
         batch_size = hyperparams.batch_size,
@@ -188,23 +203,29 @@ def main(cfg):
             y_l = y_l.to(cfg.device)
             n_u = 0
         
-        x = augment(x)
-        out_logits = model(x)
-         
-        out_probs = F.softmax(out_logits, dim = -1) 
+        x1, x2 = augment(x), augment(x)
+        
+        out_logits_x1 = model(x1)
+        with torch.no_grad(): out_logits_x2 = ema_model(x2)
             
-        supervision_loss = ce_loss(out_logits[n_u:],y_l, hyperparams.get("label_smoothing",0.0))
-
+        out_probs_x1 = F.softmax(out_logits_x1, dim = -1)
+        out_probs_x2 = F.softmax(out_logits_x2, dim = -1) 
+        
+        supervision_loss = ce_loss(out_logits_x1[n_u:],y_l, hyperparams.get("label_smoothing",0.0))
+        
         if regularization_coeff > 0.0:
-            regularization_loss = entropy(out_probs)
+            regularization_loss = mse_loss(out_probs_x1,out_probs_x2) 
         else:
             regularization_loss = torch.tensor(0.0)
-        
+
         loss = supervision_loss + regularization_coeff * regularization_loss
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
+        for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+            ema_param.data.mul_(hyperparams.ema_alpha).add_(other=param.data, alpha=1 - hyperparams.ema_alpha)
   
         with torch.no_grad(): 
             out_probs_x_l = F.softmax(model(x[n_u:]), dim = -1)
